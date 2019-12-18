@@ -1,0 +1,361 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'AWS EC2 Autoscaling Group'
+
+Metadata:
+  'AWS::CloudFormation::Interface':
+    ParameterGroups:
+      - Label:
+          default: Environment
+        Parameters:
+          - SolutionName
+      - Label:
+          default: Autoscaling
+        Parameters:
+          - AMI
+          - InstanceType
+          - KeyName
+          - RootEBSVolumeSize
+          - RootDeviceName
+      - Label:
+          default: Load Balancing
+        Parameters:
+          - CertificateArn
+          - ALBAllowedCIDR
+
+Parameters:
+
+  SolutionName:
+    Type: String
+
+# Autoscaling
+
+  AMI:
+    Description: AMI ID for Instance
+    Type: 'AWS::EC2::Image::Id'
+
+  InstanceType:
+    Description: 'EC2 Instance Type'
+    Type: String
+
+  KeyName:
+    Type: 'AWS::EC2::KeyPair::KeyName'
+    Description: >-
+      Name of an existing EC2 KeyPair
+
+  RootDeviceName:
+    Description: 'Device Name root EBS volume'
+    Type: String
+    Default: '/dev/xvda'
+
+  RootEBSVolumeSize:
+    Description: 'Size of the root EBS volume'
+    Type: Number
+    Default: 30
+
+  CertificateArn:
+    Description: 'ARN of the SSL/TLS certificate'
+    Type: String
+
+  ALBAllowedCIDR:
+    Description: 'CIDR to be used in the ingress rule for the security group of the ALB'
+    Type: String
+
+Resources:
+
+# IAM
+
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              - ec2.amazonaws.com
+            Action:
+            - sts:AssumeRole
+      Path: "/"
+      Policies:
+        - PolicyName: ec2-policy
+          PolicyDocument:
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'ec2:Describe*'
+                Resource: '*'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonEC2FullAccess'
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+        - !Ref InstanceRole
+
+# EC2 Security Groups
+
+  JenkinsServerSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Jenkins Server
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${SolutionName}-vpc'
+      SecurityGroupIngress:
+        -
+          IpProtocol: TCP
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp:
+            Fn::ImportValue:
+              !Sub '${SolutionName}-vpc-cidr'
+        -
+          IpProtocol: -1
+          SourceSecurityGroupId: !Ref JenkinsServerAccessSecurityGroup
+      SecurityGroupEgress:
+        -
+          IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${SolutionName}-sg-jenkins-server'
+        - Key: SolutionName
+          Value: !Sub '${SolutionName}'
+
+  JenkinsAgentSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Jenkins Agent
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${SolutionName}-vpc'
+      SecurityGroupIngress:
+          IpProtocol: -1
+          SourceSecurityGroupId: !Ref JenkinsServerSecurityGroup
+      SecurityGroupEgress:
+        -
+          IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${SolutionName}-sg-jenkins-agent'
+        - Key: SolutionName
+          Value: !Sub '${SolutionName}'
+
+  JenkinsServerAccessSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: EC2 Instances with access to Jenkins servers
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${SolutionName}-vpc'
+      Tags:
+        - Key: Name
+          Value: !Sub '${SolutionName}-sg-jenkins-server-access'
+        - Key: SolutionName
+          Value: !Sub '${SolutionName}'
+
+  JenkinsALBSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Access to the internet facing load balancer from anywhere
+      VpcId:
+        Fn::ImportValue: !Sub '${SolutionName}-vpc'
+      Tags:
+        - Key: Name
+          Value: !Sub '${SolutionName}-sg-jenkins-alb'
+        - Key: SolutionName
+          Value: !Sub '${SolutionName}'
+      SecurityGroupIngress:
+        -
+          IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: !Ref ALBAllowedCIDR
+        -
+          IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: !Ref ALBAllowedCIDR
+
+  EFSSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Jenkins Server
+      VpcId:
+        Fn::ImportValue:
+          !Sub '${SolutionName}-vpc'
+      SecurityGroupIngress:
+        -
+          IpProtocol: -1
+          SourceSecurityGroupId: !Ref JenkinsServerSecurityGroup
+      SecurityGroupEgress:
+        -
+          IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${SolutionName}-sg-efs'
+        - Key: SolutionName
+          Value: !Sub '${SolutionName}'
+
+
+# EC2 - Autoscaling
+
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: 'false'
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: !Ref AMI
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      SecurityGroups:
+        - !Ref JenkinsServerSecurityGroup
+      BlockDeviceMappings:
+            - DeviceName: !Ref RootDeviceName
+              Ebs:
+                VolumeSize: !Ref RootEBSVolumeSize
+                DeleteOnTermination: 'true'
+                Encrypted: 'true'
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            file_system_id=${EFS}
+            efs_directory=/var/lib/jenkins
+            efs_backup_directory=/mnt/backup
+            mkdir -p $efs_directory
+            mkdir -p $efs_backup_directory
+            echo "$file_system_id:/ $efs_directory efs tls,_netdev" >> /etc/fstab
+            echo "Mounting EFS filesystems..."
+            mount -a -t efs defaults
+            echo "EFS - changing owner to jenkins..."
+            chown -R jenkins $efs_directory
+            chown -R jenkins $efs_backup_directory
+            chkconfig jenkins on
+            echo "Starting the jenkins service..."
+            sudo service jenkins start
+
+# EC2 - Load Balancing
+
+  TargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /login?from=%2F
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      Matcher:
+        HttpCode: 200
+      Port: 8080
+      Protocol: HTTP
+      UnhealthyThresholdCount: 2
+      VpcId:
+        Fn::ImportValue: !Sub '${SolutionName}-vpc'
+
+  AutoscalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchConfigurationName: !Ref LaunchConfig
+      DesiredCapacity: 1
+      MinSize: 1
+      MaxSize: 1
+      VPCZoneIdentifier:
+        - Fn::ImportValue: !Sub '${SolutionName}-private-subnet-1'
+        - Fn::ImportValue: !Sub '${SolutionName}-private-subnet-2'
+        - Fn::ImportValue: !Sub '${SolutionName}-private-subnet-3'
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${SolutionName}'
+          PropagateAtLaunch: 'true'
+        - Key: Application
+          Value: 'jenkins-server'
+          PropagateAtLaunch: 'true'
+
+  ApplicationLoadBalancer:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Scheme: 'internet-facing'
+      Subnets:
+        - Fn::ImportValue: !Sub '${SolutionName}-public-subnet-1'
+        - Fn::ImportValue: !Sub '${SolutionName}-public-subnet-2'
+        - Fn::ImportValue: !Sub '${SolutionName}-public-subnet-3'
+      SecurityGroups:
+        - !Ref JenkinsALBSecurityGroup
+        - !Ref JenkinsServerAccessSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub '${SolutionName}'
+        - Key: Application
+          Value: 'jenkins-server'
+
+
+  AlbHttpListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Port: 443
+            Protocol: HTTPS
+            StatusCode: HTTP_301
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+
+  AlbHttpsListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: '443'
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref CertificateArn
+
+# EFS
+  EFS:
+    Type: 'AWS::EFS::FileSystem'
+    Properties:
+      PerformanceMode: generalPurpose
+      Encrypted: true
+      FileSystemTags:
+        - Key: Name
+          Value: !Sub '${SolutionName}'
+        - Key: Application
+          Value: 'jenkins-server'
+
+  MountTarget1:
+    Type: 'AWS::EFS::MountTarget'
+    Properties:
+      FileSystemId: !Ref EFS
+      SubnetId:
+        Fn::ImportValue: !Sub '${SolutionName}-private-subnet-1'
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  MountTarget2:
+    Type: 'AWS::EFS::MountTarget'
+    Properties:
+      FileSystemId: !Ref EFS
+      SubnetId:
+        Fn::ImportValue: !Sub '${SolutionName}-private-subnet-2'
+      SecurityGroups:
+        - !Ref EFSSecurityGroup
+
+  MountTarget3:
+    Type: 'AWS::EFS::MountTarget'
+    Properties:
+      FileSystemId: !Ref EFS
+      SubnetId:
+        Fn::ImportValue: !Sub '${SolutionName}-private-subnet-3'
+      SecurityGroups:
+        - !Ref EFSSecurityGroup

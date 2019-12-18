@@ -1,0 +1,45 @@
+{
+  "builders": [
+    {
+      "ami_name": "agent-amzn2-{{isotime | clean_ami_name}}",
+      "instance_type": "t2.large",
+      "region": "{{user `region`}}",
+      "vpc_id": "{{user `vpc_id`}}",
+      "subnet_filter": {
+        "filters": {
+          "tag:Type": "public"
+        },
+        "most_free": true,
+        "random": false
+      },
+      "source_ami_filter": {
+        "filters": {
+          "virtualization-type": "hvm",
+          "name": "amzn2-ami-hvm-*-x86_64-ebs",
+          "root-device-type": "ebs"
+        },
+        "owners": [
+          "137112412989"
+        ],
+        "most_recent": true
+      },
+      "ssh_username": "ec2-user",
+      "type": "amazon-ebs",
+      "launch_block_device_mappings": [
+        {
+          "device_name": "/dev/xvda",
+          "volume_size": 30,
+          "volume_type": "gp2",
+          "encrypted": "true",
+          "delete_on_termination": true
+        }
+      ]
+    }
+  ],
+  "provisioners": [
+    {
+      "type": "shell",
+      "script": "./agent-amzn2.sh"
+    }
+  ]
+}

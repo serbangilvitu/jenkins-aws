@@ -1,0 +1,4 @@
+{
+  "region": "<region-id>",
+  "vpc_id": "<vpc-id>"
+}
