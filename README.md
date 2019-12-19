@@ -25,7 +25,9 @@ Therefore there will be a couple of minutes of downtime while the new instance i
 
 #### Security
 The Jenkins servers and agents are placed in private subnets, and their security groups are restrictive.
+
 Encryption at rest: The EBS volumes and EFS filesystem are encrypted.
+
 Encryption in transit: only HTTPS traffic is forwarded, HTTP traffic is redirected to HTTPS.
 
 ## Dynamic Agent Provisioning
